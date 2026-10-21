@@ -24,6 +24,21 @@ function required(value: unknown, name: string): string {
   return value.trim();
 }
 
+// ADDED: Validate optional map coordinates from the advisory publishing form.
+function optionalCoordinate(value: unknown, name: string, minimum: number, maximum: number): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const coordinate = typeof value === "number"
+    ? value
+    : typeof value === "string" && value.trim() !== ""
+      ? Number(value)
+      : Number.NaN;
+  if (!Number.isFinite(coordinate) || coordinate < minimum || coordinate > maximum) {
+    throw new Error(`${name} must be a valid number between ${minimum} and ${maximum}.`);
+  }
+  return coordinate;
+}
+
+
 function publicActor(actor: Actor) {
   return {
     id: actor.id,
@@ -244,7 +259,7 @@ export function createApi(portal: Portal) {
         return res.status(400).json({ error: error instanceof Error ? error.message : "Could not create account." });
       }
     });
-    app.get("/advisories", (_req, res) => res.json(decorateRows(database.prepare("SELECT id, reference, title, utility, type, area, status, details, created_at FROM advisories ORDER BY id DESC").all() as Row[])));
+    app.get("/advisories", (_req, res) => res.json(decorateRows(database.prepare("SELECT id, reference, title, utility, type, area, status, details, created_at, latitude, longitude FROM advisories ORDER BY id DESC").all() as Row[])));
     app.get("/work-orders", (_req, res) => {
       const rows = database.prepare("SELECT id, reference, title, utility, area, status, starts_at, ends_at FROM work_orders ORDER BY starts_at").all() as Row[];
       return res.json(decorateRows(rows));
@@ -268,7 +283,7 @@ export function createApi(portal: Portal) {
   } else {
     const utility = utilities[portal];
     app.get("/advisories", requireUtility(utility), (_req, res) => {
-      const rows = database.prepare("SELECT id, reference, title, utility, type, area, status, details, created_at FROM advisories WHERE utility = ? ORDER BY id DESC").all(utility) as Row[];
+      const rows = database.prepare("SELECT id, reference, title, utility, type, area, status, details, created_at, latitude, longitude FROM advisories WHERE utility = ? ORDER BY id DESC").all(utility) as Row[];
       return res.json(decorateRows(rows));
     });
     app.post("/advisories", requireUtility(utility), async (req, res) => {
@@ -277,6 +292,13 @@ export function createApi(portal: Portal) {
         const area = required(req.body?.area, "Affected service area");
         const details = required(req.body?.details, "Public update");
         const type = typeof req.body?.type === "string" ? req.body.type : "Service disruption";
+
+        // ADDED: Validate the optional Google Maps location. A pin must include both coordinates.
+        const latitude = optionalCoordinate(req.body?.latitude, "Latitude", -90, 90);
+        const longitude = optionalCoordinate(req.body?.longitude, "Longitude", -180, 180);
+        if ((latitude === null) !== (longitude === null)) {
+          throw new Error("Select a map location so both latitude and longitude are provided.");
+        }
 
         // ADDED: Validate the optional announcement image before saving the advisory.
         // The frontend will submit it as a data URL (JPEG, PNG, or WebP).
@@ -290,15 +312,15 @@ export function createApi(portal: Portal) {
         // ADDED: Save the validated image with the advisory so failed email deliveries can retry with it.
         const id = Number(database.prepare(`
           INSERT INTO advisories
-            (reference, title, utility, type, area, details, image_data_url)
-          VALUES (?, ?, ?, ?, ?, ?, ?)
-        `).run(reference, title, utility, type, area, details, imageDataUrl).lastInsertRowid);
+            (reference, title, utility, type, area, details, image_data_url, latitude, longitude)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(reference, title, utility, type, area, details, imageDataUrl, latitude, longitude).lastInsertRowid);
 
         // ADDED: Pass the optional image through to the Gmail delivery function.
         const emailDelivery = await deliverAdvisoryEmails(
           portal, utility, id, reference, title, area, details, imageDataUrl,
         );
-        return res.status(201).json({ id, reference, title, utility, type, area, status: "Monitoring", details, emailDelivery });
+        return res.status(201).json({ id, reference, title, utility, type, area, status: "Monitoring", details, latitude, longitude, emailDelivery });
       } catch (error) { return res.status(400).json({ error: error instanceof Error ? error.message : "Could not publish advisory." }); }
     });
     app.get("/advisories/:id/email-delivery", requireUtility(utility), (req, res) => {

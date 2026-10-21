@@ -25,6 +25,7 @@ import {
   type Status,
   type WorkOrder,
 } from "./prototypeStore.js";
+import { GoogleMap, type CivicAlertMapAnnouncement, type CivicAlertMapLocation } from "./GoogleMaps.js";
 import "./styles.css";
 
 const portalSettings = localPortalSettings;
@@ -82,6 +83,28 @@ async function readAnnouncementImage(file: FormDataEntryValue | null): Promise<s
 
     reader.onerror = () => reject(new Error("Could not read the selected image."));
     reader.readAsDataURL(file);
+  });
+}
+
+// ADDED: Convert existing API advisory records into validated map markers.
+function mapAnnouncements(advisories: Advisory[]): CivicAlertMapAnnouncement[] {
+  return advisories.flatMap(item => {
+    const located = item as Advisory & { latitude?: unknown; longitude?: unknown };
+    if (located.latitude === null || located.latitude === undefined ||
+        located.longitude === null || located.longitude === undefined) return [];
+    const latitude = Number(located.latitude);
+    const longitude = Number(located.longitude);
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+        latitude < -90 || latitude > 90 || longitude < -180 || longitude > 180) return [];
+    return [{
+      id: item.id,
+      title: item.title,
+      utility: item.utility,
+      area: item.area,
+      status: item.status,
+      latitude,
+      longitude,
+    }];
   });
 }
 
@@ -481,6 +504,11 @@ function App({ portal }: { portal: Portal }) {
       `Expected restoration: ${form.get("restoration") || "To be confirmed"}`,
       String(form.get("details") || ""),
     ].join("\n\n");
+    // ADDED: Include the optional coordinates selected from the Google Map.
+    const latitudeValue = form.get("latitude");
+    const longitudeValue = form.get("longitude");
+    const latitude = typeof latitudeValue === "string" && latitudeValue.trim() ? Number(latitudeValue) : null;
+    const longitude = typeof longitudeValue === "string" && longitudeValue.trim() ? Number(longitudeValue) : null;
     setPublishedDelivery(null);
     try {
       // ADDED: Read the optional image selected in the CEPALCO publishing form.
@@ -494,6 +522,9 @@ function App({ portal }: { portal: Portal }) {
           area: form.get("area"),
           type: form.get("category"),
           details,
+          // ADDED: Save the map selection alongside the advisory.
+          latitude,
+          longitude,
           // ADDED: Pass the image to the backend for storage and Gmail attachment.
           imageDataUrl,
         }),
@@ -536,6 +567,11 @@ function App({ portal }: { portal: Portal }) {
       `Service window: ${form.get("startsAt") || "To be confirmed"}${form.get("endsAt") ? ` – ${form.get("endsAt")}` : ""}`,
       String(form.get("details") || ""),
     ].join("\n\n");
+    // ADDED: Include the optional coordinates selected from the Google Map.
+    const latitudeValue = form.get("latitude");
+    const longitudeValue = form.get("longitude");
+    const latitude = typeof latitudeValue === "string" && latitudeValue.trim() ? Number(latitudeValue) : null;
+    const longitude = typeof longitudeValue === "string" && longitudeValue.trim() ? Number(longitudeValue) : null;
     setPublishedDelivery(null);
     try {
       // ADDED: Read the optional image selected in the Water District publishing form.
@@ -548,12 +584,15 @@ function App({ portal }: { portal: Portal }) {
           area: form.get("area"),
           type: form.get("category"),
           details,
+          // ADDED: Save the map selection alongside the advisory.
+          latitude,
+          longitude,
           // ADDED: Pass the image to the backend for storage and Gmail attachment.
           imageDataUrl,
         }),
       });
       setPublishedDelivery({ advisoryId: published.id, summary: published.emailDelivery });
-      for (const name of ["category", "priority", "title", "area", "details", "startsAt", "endsAt"]) {
+      for (const name of ["category", "priority", "title", "area", "details", "startsAt", "endsAt", "latitude", "longitude"]) {
         localStorage.removeItem(`civicalert:water:draft:${name}`);
       }
       setToast(advisoryPublishMessage(copy("copy_27193c97e59e"), published.emailDelivery));
@@ -963,13 +1002,24 @@ function CepalcoPublishForm({ busy, onCancel, onSubmit }: { busy: boolean; onCan
   const categories = requiredSetting(settingsFor("cepalco").categories, "cepalco.categories");
   const priorities = requiredSetting(settingsFor("cepalco").priorities, "cepalco.priorities");
   const [category, setCategory] = useState(categories[0]?.value || "");
+  // ADDED: Holds the point staff select on Google Maps until the advisory is submitted.
+  const [selectedLocation, setSelectedLocation] = useState<CivicAlertMapLocation | null>(null);
   return <form className="cepalco-publish-layout" onSubmit={onSubmit}>
     <div className="space-y-3">
       <section className="cepalco-form-card"><h2>{copy("copy_18bac6177a05")}</h2><p>{copy("copy_e8561176d153")}</p><div className="cepalco-category-grid">{categories.map(({ value, description, icon }) => <button key={value} type="button" onClick={() => setCategory(value)} className={`cepalco-category ${category === value ? "selected" : ""}`}><span>{icon}</span><strong>{value}</strong><small>{description}</small></button>)}</div><input type="hidden" name="category" value={category} /><label className="cepalco-field">{copy("copy_d60dbba07922")}<select name="priority" defaultValue="High">{priorities.map(priority => <option key={priority}>{priority}</option>)}</select></label></section>
       <section className="cepalco-form-card"><h2>{copy("copy_b62f2612f787")}</h2><p>{copy("copy_c6ad5ac6825a")}</p><label className="cepalco-field">{copy("copy_fe6476826a3a")}<input name="title" required maxLength={160} placeholder={copy("copy_fe44d4af9f10")} /></label><div className="grid gap-3 sm:grid-cols-2"><label className="cepalco-field">{copy("copy_3c84d9e85737")}<input name="area" required maxLength={160} placeholder={copy("copy_5a2f832484db")} /></label><label className="cepalco-field">{copy("copy_8e1999f8fbd0")}<input name="restoration" placeholder={copy("copy_506474840ce4")} /></label></div></section>
       <section className="cepalco-form-card"><h2>{copy("copy_138aed10d89c")}</h2><p>{copy("copy_e185343127fd")}</p><label className="cepalco-field">{copy("copy_e7e6d38f2c23")}<textarea name="details" required rows={5} maxLength={1800} placeholder={copy("copy_4c3a394380e5")} /></label><div className="cepalco-form-note">{copy("copy_9f395debef45")}</div></section>
-      <section className="cepalco-form-card"><h2>{copy("copy_42e399a0716f")}</h2><p>{copy("copy_214a86420728")}</p><label className="cepalco-channel"><input type="checkbox" checked readOnly /><span><strong>{copy("copy_6775a7e3a95d")}</strong><small>{copy("copy_eec3c07d60d4")}</small></span><span className="cepalco-pill good">{copy("copy_92340695899b")}</span></label><div className="cepalco-channel disabled"><input type="checkbox" disabled /><span><strong>{copy("copy_47a9cef76271")}</strong><small>{copy("copy_ba137e5dbadd")}</small></span><span className="cepalco-pill">{copy("copy_ca1844969742")}</span></div><GmailConnection portal="cepalco" token={localStorage.getItem("civicalert:cepalco:account")} /></section>
-      <section className="cepalco-form-card"><h2>{copy("copy_5a830f9b317e")}</h2><p>{copy("copy_b0bb9ebf65ac")}</p>{/* ADDED: Replace the prototype upload placeholder with a working image picker. */}
+      {/* ADDED: Interactive Google Map location picker for new CEPALCO advisories. */}
+      <section className="cepalco-form-card">
+        <h2>5. Affected location on Google Maps</h2>
+        <p>Click the map to place a pin at the affected location. This selection is optional.</p>
+        <input type="hidden" name="latitude" value={selectedLocation?.latitude ?? ""} />
+        <input type="hidden" name="longitude" value={selectedLocation?.longitude ?? ""} />
+        <GoogleMap mode="picker" height={270} label="Click the map to select a location" onLocationSelected={setSelectedLocation} />
+        <p className="mb-0 mt-2 text-xs text-slate-600">{selectedLocation ? `Selected coordinates: ${selectedLocation.latitude.toFixed(6)}, ${selectedLocation.longitude.toFixed(6)}. Click again to move the pin.` : "No point selected yet. Add a pin to make this announcement appear on the map."}</p>
+      </section>
+      <section className="cepalco-form-card"><h2>6. {copy("copy_42e399a0716f")}</h2><p>{copy("copy_214a86420728")}</p><label className="cepalco-channel"><input type="checkbox" checked readOnly /><span><strong>{copy("copy_6775a7e3a95d")}</strong><small>{copy("copy_eec3c07d60d4")}</small></span><span className="cepalco-pill good">{copy("copy_92340695899b")}</span></label><div className="cepalco-channel disabled"><input type="checkbox" disabled /><span><strong>{copy("copy_47a9cef76271")}</strong><small>{copy("copy_ba137e5dbadd")}</small></span><span className="cepalco-pill">{copy("copy_ca1844969742")}</span></div><GmailConnection portal="cepalco" token={localStorage.getItem("civicalert:cepalco:account")} /></section>
+      <section className="cepalco-form-card"><h2>6. {copy("copy_5a830f9b317e")}</h2><p>{copy("copy_b0bb9ebf65ac")}</p>{/* ADDED: Replace the prototype upload placeholder with a working image picker. */}
         <div className="cepalco-upload">
           <label className="block text-xs font-semibold text-slate-700">
             Announcement image (optional)
@@ -1006,11 +1056,8 @@ function CepalcoRestorationMap({ advisories }: { advisories: Advisory[] }) {
 }
 
 function CepalcoLargeMap({ advisories }: { advisories: Advisory[] }) {
-  const [zoom, setZoom] = useState(1);
-  const [layersVisible, setLayersVisible] = useState(true);
-  const markers = requiredSetting(settingsFor("cepalco").maps?.restoration, "cepalco.maps.restoration");
-  const dashboard = requiredSetting(settingsFor("cepalco").dashboard, "cepalco.dashboard");
-  return <div className={`cepalco-large-map ${layersVisible ? "" : "layers-hidden"}`}><span className="large-map-label">{copy("copy_39c9fa94da7d")}</span><svg viewBox="0 0 900 360" preserveAspectRatio="none" aria-hidden="true" style={{ transform: `scale(${zoom})` }}><path d="M-30 230 C140 200 220 280 360 220 S610 100 930 110" /><path d="M-30 250 C140 220 220 300 360 240 S610 120 930 130" /><path d="M70 30 150 320M220 15 310 320M520 30 440 330M660 0 570 360M840 40 720 320" /></svg>{markers.map(marker => <span key={marker.kind} className={`large-map-pin ${marker.kind}`} style={{ left: `${marker.left}%`, top: `${marker.top}%` }} />)}<div className="large-map-popup"><span className="cepalco-status dispatch">{copy("copy_79c63b116a00")}</span><strong>{advisories[0]?.title || String(requiredSetting(dashboard.mapFallbackTitle, "cepalco.dashboard.mapFallbackTitle"))}</strong><small>{advisories[0]?.area || String(requiredSetting(dashboard.mapFallbackArea, "cepalco.dashboard.mapFallbackArea"))}</small></div><div className="large-map-controls"><button aria-label={copy("copy_5af504643b96")} aria-pressed={layersVisible} onClick={() => setLayersVisible(!layersVisible)}>{copy("copy_e5235a4a75e6")}</button><button aria-label={copy("copy_0e47f09a748f")} onClick={() => setZoom(Math.min(1.4, zoom + .1))}>{copy("copy_b790fa06d156")}</button><button aria-label={copy("copy_bc7b631a689b")} onClick={() => setZoom(Math.max(.8, zoom - .1))}>{copy("copy_afba2418d6ae")}</button></div><span className="map-coordinates">{copy("copy_e68c9fde0aac")}</span></div>;
+  // UPDATED: Replaced mock SVG lines and simulated pins with saved Google Maps locations.
+  return <GoogleMap mode="display" announcements={mapAnnouncements(advisories)} height={360} label="Active utility advisory locations" />;
 }
 
 function MapMetric({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: string }) {
@@ -1110,6 +1157,12 @@ function ResidentAdvisories({ items, workOrders }: { items: Advisory[]; workOrde
       <div className="flex flex-wrap items-center gap-2"><label className="flex min-w-[220px] flex-1 items-center gap-2 rounded-lg border border-slate-200 px-3 py-2 text-slate-400"><Icon name="search" className="h-3.5 w-3.5" /><input value={query} onChange={event => setQuery(event.target.value)} className="w-full border-0 bg-transparent text-[9px] text-slate-800 outline-none" placeholder={copy("copy_41d242d68aa1")} /></label><select aria-label={copy("copy_1a31145d7148")} value={utility} onChange={event => setUtility(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[9px] text-slate-700">{utilityOptions.map(option => <option key={option}>{option}</option>)}</select><select aria-label={copy("copy_94d5a7703a82")} value={status} onChange={event => setStatus(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[9px] text-slate-700">{statusOptions.map(option => <option key={option}>{option}</option>)}</select></div>
       <div className="mt-3 flex flex-wrap items-center gap-1.5"><span className="mr-1 text-[8px] text-slate-500">{copy("copy_e1146f006ab3")}</span>{quickFilters.map(option => <button key={option} onClick={() => utilityOptions.includes(option) ? (setUtility(option), setStatus("All")) : (setStatus(option), setUtility("All"))} className={`${filterClass} ${utility === option || status === option || (option === "All" && utility === "All" && status === "All") ? "border-[#64234f] bg-[#64234f] text-white" : "border-slate-200 bg-white text-slate-600"}`}>{option}</button>)}</div>
     </div>
+    {/* ADDED: Residents can see mapped locations for advisories that include coordinates. */}
+    <article className="rounded-xl border border-slate-200 bg-white p-4 sm:p-5">
+      <h2 className="mb-1 mt-0 text-sm font-bold text-slate-900">Announcement locations</h2>
+      <p className="mb-3 mt-0 text-xs text-slate-500">Select a marker to see its utility, affected area, and status.</p>
+      <GoogleMap mode="display" announcements={mapAnnouncements(filtered)} height={320} label="Filtered utility announcements" />
+    </article>
     <div className="grid gap-3 xl:grid-cols-2">{filtered.map(item => <ResidentAdvisoryCard key={`advisory-${item.id}`} item={item} />)}{filteredWorkOrders.map(item => <ResidentWorkCard key={`work-${item.id}`} item={item} />)}{filtered.length + filteredWorkOrders.length === 0 && <div className="rounded-xl border border-slate-200 bg-white p-10 text-center text-xs text-slate-500">{copy("copy_2559f73c5e19")}</div>}</div>
   </section>;
 }
@@ -1254,6 +1307,8 @@ function WaterPublishForm({ busy, onCancel, onSubmit }: { busy: boolean; onCance
   const priorities = requiredSetting(settingsFor("water").priorities, "water.priorities");
   const [category, setCategory] = useState(() => readWaterDraftValue("category") || categories[0]?.value || "");
   const [draftSaved, setDraftSaved] = useState(false);
+  // ADDED: Holds the point staff select on Google Maps until the advisory is submitted.
+  const [selectedLocation, setSelectedLocation] = useState<CivicAlertMapLocation | null>(null);
   const saveDraft = (form: HTMLFormElement | null) => {
     if (!form) return;
     // UPDATED: Do not store File objects as text in localStorage drafts.
@@ -1269,6 +1324,15 @@ function WaterPublishForm({ busy, onCancel, onSubmit }: { busy: boolean; onCance
     <section className="water-form-card"><h3>{copy("copy_9ae3d18007f5")}</h3><p>{copy("copy_614691dc2b74")}</p><div className="water-category-grid">{categories.map(({ value, description }) => <button type="button" className={category === value ? "selected" : ""} key={value} onClick={() => { setCategory(value); setDraftSaved(false); }}><strong>{value}</strong><small>{description}</small></button>)}</div><input type="hidden" name="category" value={category} /><label>{copy("copy_b64705ba9d2d")}<select name="priority" defaultValue={readWaterDraftValue("priority") || "Urgent"} onChange={() => setDraftSaved(false)}>{priorities.map(priority => <option key={priority}>{priority}</option>)}</select></label></section>
     <section className="water-form-card"><h3>{copy("copy_487b032a571c")}</h3><p>{copy("copy_e4e2959f60c7")}</p><label>{copy("copy_fe6476826a3a")}<input name="title" required maxLength={160} defaultValue={readWaterDraftValue("title")} onChange={() => setDraftSaved(false)} placeholder={copy("copy_879a2b3065ae")} /></label><label>{copy("copy_acb7ba985414")}<input name="area" required maxLength={160} defaultValue={readWaterDraftValue("area")} onChange={() => setDraftSaved(false)} placeholder={copy("copy_2fc8166ce582")} /></label><label>{copy("copy_6b2089276d5a")}<textarea name="details" required rows={5} maxLength={1800} defaultValue={readWaterDraftValue("details")} onChange={() => setDraftSaved(false)} placeholder={copy("copy_e0c033933646")} /></label></section>
     <section className="water-form-card"><h3>{copy("copy_72098c4c1ad3")}</h3><p>{copy("copy_19968382af70")}</p><div className="water-timeline-grid"><label>{copy("copy_25feba1abd90")}<input name="startsAt" type="datetime-local" defaultValue={readWaterDraftValue("startsAt")} onChange={() => setDraftSaved(false)} /></label><label>{copy("copy_5e4707dcd926")}<input name="endsAt" type="datetime-local" defaultValue={readWaterDraftValue("endsAt")} onChange={() => setDraftSaved(false)} /></label></div></section>
+    {/* ADDED: Interactive Google Map location picker for Water District advisories. */}
+    <section className="water-form-card">
+      <h3>Affected location on Google Maps</h3>
+      <p>Click the map to place a pin at the affected location. This selection is optional.</p>
+      <input type="hidden" name="latitude" value={selectedLocation?.latitude ?? ""} />
+      <input type="hidden" name="longitude" value={selectedLocation?.longitude ?? ""} />
+      <GoogleMap mode="picker" height={270} label="Click the map to select a location" onLocationSelected={setSelectedLocation} />
+      <p className="mb-0 mt-2 text-xs text-slate-600">{selectedLocation ? `Selected coordinates: ${selectedLocation.latitude.toFixed(6)}, ${selectedLocation.longitude.toFixed(6)}. Click again to move the pin.` : "No point selected yet. Add a pin to make this announcement appear on the map."}</p>
+    </section>
     {/* ADDED: Optional image picker for Water District Gmail attachments. */}
       <section className="water-form-card">
         <h3>Announcement image (optional)</h3>
@@ -1301,12 +1365,12 @@ function WorkTable({ items }: { items: WorkOrder[] }) {
 
 function Network({ portal, advisories, network }: { portal: Portal; advisories: Advisory[]; network: NetworkReading[] }) {
   const water = portal === "water";
-  const mapMarkers = requiredSetting(settingsFor(portal).maps?.network, `${portal}.maps.network`);
   const mapLabel = requiredSetting(settingsFor(portal).mapLabels?.network, `${portal}.mapLabels.network`);
   return <div className="space-y-4">
     <article className="rounded-xl border border-slate-200 bg-white p-5">
       <div className="mb-4 flex items-center justify-between gap-3"><div><h2 className="m-0 text-base font-bold text-slate-900">{water ? copy("copy_a057083f0c39") : copy("copy_10811357280f")}</h2><p className="mb-0 mt-1 text-[10px] text-slate-500">{copy("copy_447c01316fb5")}</p></div><span className="rounded-full bg-emerald-50 px-2 py-1 text-[9px] font-bold text-emerald-800">{copy("copy_1dc83f605edf")}</span></div>
-      <div className="water-map relative h-[360px] overflow-hidden rounded-xl bg-gradient-to-br from-[#d8e9e6] via-[#eef2ea] to-[#d9e7ee]"><span className="absolute left-4 top-4 text-[10px] font-extrabold text-slate-600">{mapLabel}</span>{mapMarkers.map((marker, index) => <span key={`${marker.kind}-${index}`} className={`map-pin ${marker.kind} absolute h-5 w-5 rounded-full border-4 border-white bg-rose-700 shadow-md`} style={{ left: `${marker.left}%`, top: `${marker.top}%` }} />)}</div>
+      {/* UPDATED: Replace the simulated network map with actual advisory location markers. */}
+      <GoogleMap mode="display" announcements={mapAnnouncements(advisories)} height={360} label={mapLabel} />
       <div className="mt-3 flex gap-4 text-[10px] text-slate-500"><span>{copy("copy_bbf0b0b5e5df")}</span><span className="text-amber-700">{copy("copy_8ee132327af2")}</span><span className="text-blue-700">{copy("copy_f30c5b09f4f0")}</span></div>
     </article>
     {water && <PressureZones readings={network} />}

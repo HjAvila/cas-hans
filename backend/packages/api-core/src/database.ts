@@ -151,6 +151,19 @@ try {
     );
   }
 
+  // ADDED: Store the selected map location for each advisory.
+if (!advisoryColumns.has("latitude")) {
+  database.exec(
+    "ALTER TABLE advisories ADD COLUMN latitude REAL"
+  );
+}
+
+if (!advisoryColumns.has("longitude")) {
+  database.exec(
+    "ALTER TABLE advisories ADD COLUMN longitude REAL"
+  );
+}
+
   database.exec("COMMIT");
 } catch (error) {
   database.exec("ROLLBACK");

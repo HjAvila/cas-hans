@@ -101,20 +101,134 @@ export function decryptRefreshToken(value: string): string {
   }
 }
 
-export function createRawEmail(recipient: string, subject: string, body: string): string {
-  if (!/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(recipient) || /[\r\n]/.test(recipient)) {
+
+export type GmailImageAttachment = {
+  mimeType: "image/jpeg" | "image/png" | "image/webp";
+  filename: string;
+  content: Buffer;
+};
+
+export function parseGmailImageAttachment(
+  value: unknown,
+): GmailImageAttachment | null {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  if (typeof value !== "string" || value.length > 1_500_000) {
+    throw new Error("The announcement image must be under 1 MB.");
+  }
+
+  const match =
+    /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(value);
+
+  if (!match) {
+    throw new Error("Use a JPEG, PNG, or WebP announcement image.");
+  }
+
+  const mimeType = match[1] as GmailImageAttachment["mimeType"];
+  const content = Buffer.from(match[2], "base64");
+
+  if (
+    content.length === 0 ||
+    content.length > 1_000_000 ||
+    content.toString("base64") !== match[2]
+  ) {
+    throw new Error("The announcement image is invalid or exceeds 1 MB.");
+  }
+
+  const validSignature =
+    mimeType === "image/jpeg"
+      ? content.length >= 3 &&
+        content[0] === 0xff &&
+        content[1] === 0xd8 &&
+        content[2] === 0xff
+      : mimeType === "image/png"
+        ? content.subarray(0, 8).equals(
+            Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+          )
+        : content.length >= 12 &&
+          content.toString("ascii", 0, 4) === "RIFF" &&
+          content.toString("ascii", 8, 12) === "WEBP";
+
+  if (!validSignature) {
+    throw new Error("The uploaded file does not match its image type.");
+  }
+
+  const extensions = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+  };
+
+  return {
+    mimeType,
+    filename: `announcement.${extensions[mimeType]}`,
+    content,
+  };
+}
+
+export function createRawEmail(
+  recipient: string,
+  subject: string,
+  body: string,
+  attachment?: GmailImageAttachment | null,
+): string {
+  if (
+    !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(recipient) ||
+    /[\r\n]/.test(recipient)
+  ) {
     throw new Error("Recipient email address is invalid.");
   }
-  const encodedSubject = `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
-  const message = [
+
+  const encodedSubject =
+    `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
+
+  const encodeBase64Lines = (content: Buffer | string): string => {
+    const encoded = Buffer.from(content).toString("base64");
+    return encoded.match(/.{1,76}/g)?.join("\r\n") ?? "";
+  };
+
+  const headers = [
     `To: ${recipient}`,
     `Subject: ${encodedSubject}`,
     "MIME-Version: 1.0",
+  ];
+
+  if (!attachment) {
+    return Buffer.from(
+      [
+        ...headers,
+        "Content-Type: text/plain; charset=UTF-8",
+        "Content-Transfer-Encoding: base64",
+        "",
+        Buffer.from(body, "utf8").toString("base64"),
+      ].join("\r\n"),
+      "utf8",
+    ).toString("base64url");
+  }
+
+  const boundary = `civicalert_${randomBytes(18).toString("hex")}`;
+
+  const message = [
+    ...headers,
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    "",
+    `--${boundary}`,
     "Content-Type: text/plain; charset=UTF-8",
     "Content-Transfer-Encoding: base64",
     "",
-    Buffer.from(body, "utf8").toString("base64"),
+    encodeBase64Lines(Buffer.from(body, "utf8")),
+    `--${boundary}`,
+    `Content-Type: ${attachment.mimeType}; name="${attachment.filename}"`,
+    `Content-Disposition: attachment; filename="${attachment.filename}"`,
+    "Content-Transfer-Encoding: base64",
+    "",
+    encodeBase64Lines(attachment.content),
+    `--${boundary}--`,
+    "",
   ].join("\r\n");
+
   return Buffer.from(message, "utf8").toString("base64url");
 }
 
@@ -124,13 +238,19 @@ export async function sendGmailMessage(
   recipient: string,
   subject: string,
   body: string,
+  imageDataUrl?: string | null,
 ): Promise<void> {
   const auth = createOAuthClient(portal);
   auth.setCredentials({ refresh_token: refreshToken });
+
+  const attachment = parseGmailImageAttachment(imageDataUrl);
   const gmail = google.gmail({ version: "v1", auth });
+
   await gmail.users.messages.send({
     userId: "me",
-    requestBody: { raw: createRawEmail(recipient, subject, body) },
+    requestBody: {
+      raw: createRawEmail(recipient, subject, body, attachment),
+    },
   });
 }
 

@@ -51,6 +51,40 @@ function requiredSetting<T>(value: T | undefined, name: string): T {
   return value;
 }
 
+// ADDED: Read and validate an optional announcement image for the Gmail attachment.
+async function readAnnouncementImage(file: FormDataEntryValue | null): Promise<string | null> {
+  // An unselected file input produces an empty File; treat it as no attachment.
+  if (!(file instanceof File) || file.size === 0) {
+    return null;
+  }
+
+  const allowedTypes = ["image/jpeg", "image/png", "image/webp"];
+
+  // Keep frontend limits aligned with the backend/Gmail attachment validation.
+  if (!allowedTypes.includes(file.type)) {
+    throw new Error("Choose a JPEG, PNG, or WebP image.");
+  }
+  if (file.size > 1_000_000) {
+    throw new Error("The announcement image must be 1 MB or smaller.");
+  }
+
+  // Convert the selected image to a data URL for the existing JSON API request.
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        resolve(reader.result);
+      } else {
+        reject(new Error("Could not read the selected image."));
+      }
+    };
+
+    reader.onerror = () => reject(new Error("Could not read the selected image."));
+    reader.readAsDataURL(file);
+  });
+}
+
 function Icon({ name, className = "h-5 w-5" }: { name: string; className?: string }) {
   const paths: Record<string, string> = {
     home: "M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1V10Z",
@@ -449,6 +483,9 @@ function App({ portal }: { portal: Portal }) {
     ].join("\n\n");
     setPublishedDelivery(null);
     try {
+      // ADDED: Read the optional image selected in the CEPALCO publishing form.
+      const imageDataUrl = await readAnnouncementImage(form.get("announcementImage"));
+
       const published = await localAction<{ id: number; emailDelivery: EmailDeliverySummary }>(portal, "/advisories", token, {
         method: "POST",
         body: JSON.stringify({
@@ -457,6 +494,8 @@ function App({ portal }: { portal: Portal }) {
           area: form.get("area"),
           type: form.get("category"),
           details,
+          // ADDED: Pass the image to the backend for storage and Gmail attachment.
+          imageDataUrl,
         }),
       });
       setPublishedDelivery({ advisoryId: published.id, summary: published.emailDelivery });
@@ -499,9 +538,19 @@ function App({ portal }: { portal: Portal }) {
     ].join("\n\n");
     setPublishedDelivery(null);
     try {
+      // ADDED: Read the optional image selected in the Water District publishing form.
+      const imageDataUrl = await readAnnouncementImage(form.get("announcementImage"));
+
       const published = await localAction<{ id: number; emailDelivery: EmailDeliverySummary }>(portal, "/advisories", token, {
         method: "POST",
-        body: JSON.stringify({ title: form.get("title"), area: form.get("area"), type: form.get("category"), details }),
+        body: JSON.stringify({
+          title: form.get("title"),
+          area: form.get("area"),
+          type: form.get("category"),
+          details,
+          // ADDED: Pass the image to the backend for storage and Gmail attachment.
+          imageDataUrl,
+        }),
       });
       setPublishedDelivery({ advisoryId: published.id, summary: published.emailDelivery });
       for (const name of ["category", "priority", "title", "area", "details", "startsAt", "endsAt"]) {
@@ -920,7 +969,19 @@ function CepalcoPublishForm({ busy, onCancel, onSubmit }: { busy: boolean; onCan
       <section className="cepalco-form-card"><h2>{copy("copy_b62f2612f787")}</h2><p>{copy("copy_c6ad5ac6825a")}</p><label className="cepalco-field">{copy("copy_fe6476826a3a")}<input name="title" required maxLength={160} placeholder={copy("copy_fe44d4af9f10")} /></label><div className="grid gap-3 sm:grid-cols-2"><label className="cepalco-field">{copy("copy_3c84d9e85737")}<input name="area" required maxLength={160} placeholder={copy("copy_5a2f832484db")} /></label><label className="cepalco-field">{copy("copy_8e1999f8fbd0")}<input name="restoration" placeholder={copy("copy_506474840ce4")} /></label></div></section>
       <section className="cepalco-form-card"><h2>{copy("copy_138aed10d89c")}</h2><p>{copy("copy_e185343127fd")}</p><label className="cepalco-field">{copy("copy_e7e6d38f2c23")}<textarea name="details" required rows={5} maxLength={1800} placeholder={copy("copy_4c3a394380e5")} /></label><div className="cepalco-form-note">{copy("copy_9f395debef45")}</div></section>
       <section className="cepalco-form-card"><h2>{copy("copy_42e399a0716f")}</h2><p>{copy("copy_214a86420728")}</p><label className="cepalco-channel"><input type="checkbox" checked readOnly /><span><strong>{copy("copy_6775a7e3a95d")}</strong><small>{copy("copy_eec3c07d60d4")}</small></span><span className="cepalco-pill good">{copy("copy_92340695899b")}</span></label><div className="cepalco-channel disabled"><input type="checkbox" disabled /><span><strong>{copy("copy_47a9cef76271")}</strong><small>{copy("copy_ba137e5dbadd")}</small></span><span className="cepalco-pill">{copy("copy_ca1844969742")}</span></div><GmailConnection portal="cepalco" token={localStorage.getItem("civicalert:cepalco:account")} /></section>
-      <section className="cepalco-form-card"><h2>{copy("copy_5a830f9b317e")}</h2><p>{copy("copy_b0bb9ebf65ac")}</p><div className="cepalco-upload">{copy("copy_7ca1e9caeb18")}<small>{copy("copy_c66dada9b643")}</small></div></section>
+      <section className="cepalco-form-card"><h2>{copy("copy_5a830f9b317e")}</h2><p>{copy("copy_b0bb9ebf65ac")}</p>{/* ADDED: Replace the prototype upload placeholder with a working image picker. */}
+        <div className="cepalco-upload">
+          <label className="block text-xs font-semibold text-slate-700">
+            Announcement image (optional)
+            <input
+              type="file"
+              name="announcementImage"
+              accept="image/jpeg,image/png,image/webp"
+              className="mt-2 block w-full text-xs font-normal"
+            />
+          </label>
+          <small>Choose a JPEG, PNG, or WebP image. Maximum file size: 1 MB. It will be attached to Gmail notifications.</small>
+        </div></section>
       <div className="flex flex-wrap justify-end gap-2"><button type="button" className="cepalco-secondary" onClick={onCancel}>{copy("copy_19766ed6ccb2")}</button><button type="submit" disabled={busy} className="cepalco-primary">{busy ? copy("copy_582e0f1abad4") : copy("copy_6f2587fed592")}</button></div>
     </div>
     <aside className="space-y-3"><div className="cepalco-form-card"><span className="cepalco-kicker">{copy("copy_88f75d3e34fd")}</span><h3>{category}</h3><p className="text-[9px] text-slate-500">{copy("copy_6a90df4a57cd")}</p><div className="cepalco-scene"><span className="scene-cloud" /><span className="scene-pole" /><span className="scene-wire wire-one" /><span className="scene-wire wire-two" /><span className="scene-bucket" /><span className="scene-worker worker-one" /><span className="scene-worker worker-two" /><span className="scene-road" /></div><p className="mb-0 mt-2 text-[8px] text-slate-500">{copy("copy_52572aed2377")}</p></div><div className="cepalco-form-card"><h2>{copy("copy_af6c41b06fec")}</h2><ul className="cepalco-checklist"><li>{copy("copy_801a3ef3df85")}</li><li>{copy("copy_20c06589328a")}</li><li>{copy("copy_d583e7f68646")}</li></ul></div></aside>
@@ -1195,7 +1256,11 @@ function WaterPublishForm({ busy, onCancel, onSubmit }: { busy: boolean; onCance
   const [draftSaved, setDraftSaved] = useState(false);
   const saveDraft = (form: HTMLFormElement | null) => {
     if (!form) return;
-    new FormData(form).forEach((value, name) => localStorage.setItem(`civicalert:water:draft:${name}`, String(value)));
+    // UPDATED: Do not store File objects as text in localStorage drafts.
+    new FormData(form).forEach((value, name) => {
+      if (value instanceof File) return;
+      localStorage.setItem(`civicalert:water:draft:${name}`, String(value));
+    });
     localStorage.setItem("civicalert:water:draft:category", category);
     setDraftSaved(true);
   };
@@ -1204,7 +1269,23 @@ function WaterPublishForm({ busy, onCancel, onSubmit }: { busy: boolean; onCance
     <section className="water-form-card"><h3>{copy("copy_9ae3d18007f5")}</h3><p>{copy("copy_614691dc2b74")}</p><div className="water-category-grid">{categories.map(({ value, description }) => <button type="button" className={category === value ? "selected" : ""} key={value} onClick={() => { setCategory(value); setDraftSaved(false); }}><strong>{value}</strong><small>{description}</small></button>)}</div><input type="hidden" name="category" value={category} /><label>{copy("copy_b64705ba9d2d")}<select name="priority" defaultValue={readWaterDraftValue("priority") || "Urgent"} onChange={() => setDraftSaved(false)}>{priorities.map(priority => <option key={priority}>{priority}</option>)}</select></label></section>
     <section className="water-form-card"><h3>{copy("copy_487b032a571c")}</h3><p>{copy("copy_e4e2959f60c7")}</p><label>{copy("copy_fe6476826a3a")}<input name="title" required maxLength={160} defaultValue={readWaterDraftValue("title")} onChange={() => setDraftSaved(false)} placeholder={copy("copy_879a2b3065ae")} /></label><label>{copy("copy_acb7ba985414")}<input name="area" required maxLength={160} defaultValue={readWaterDraftValue("area")} onChange={() => setDraftSaved(false)} placeholder={copy("copy_2fc8166ce582")} /></label><label>{copy("copy_6b2089276d5a")}<textarea name="details" required rows={5} maxLength={1800} defaultValue={readWaterDraftValue("details")} onChange={() => setDraftSaved(false)} placeholder={copy("copy_e0c033933646")} /></label></section>
     <section className="water-form-card"><h3>{copy("copy_72098c4c1ad3")}</h3><p>{copy("copy_19968382af70")}</p><div className="water-timeline-grid"><label>{copy("copy_25feba1abd90")}<input name="startsAt" type="datetime-local" defaultValue={readWaterDraftValue("startsAt")} onChange={() => setDraftSaved(false)} /></label><label>{copy("copy_5e4707dcd926")}<input name="endsAt" type="datetime-local" defaultValue={readWaterDraftValue("endsAt")} onChange={() => setDraftSaved(false)} /></label></div></section>
-    <section className="water-form-card"><h3>{copy("copy_aebccf9c5c72")}</h3><p>{copy("copy_6c5d7be2a766")}</p><div className="water-channel-row"><span><strong>{copy("copy_26608976aae5")}</strong><small>{copy("copy_008e89f8cae7")}</small></span><input type="checkbox" checked readOnly aria-label={copy("copy_5bf4fa859674")} /></div><div className="water-channel-row"><span><strong>{copy("copy_ecd7a93e0777")}</strong><small>{copy("copy_c6be37bce81c")}</small></span><input type="checkbox" disabled aria-label={copy("copy_913029ee5d36")} /></div><GmailConnection portal="water" token={localStorage.getItem("civicalert:water:account")} /></section>
+    {/* ADDED: Optional image picker for Water District Gmail attachments. */}
+      <section className="water-form-card">
+        <h3>Announcement image (optional)</h3>
+        <p>Choose an image to attach to email notifications.</p>
+        <label className="block text-xs font-semibold text-slate-700">
+          Image file
+          <input
+            type="file"
+            name="announcementImage"
+            accept="image/jpeg,image/png,image/webp"
+            className="mt-2 block w-full text-xs font-normal"
+            onChange={() => setDraftSaved(false)}
+          />
+        </label>
+        <small>JPEG, PNG, or WebP. Maximum file size: 1 MB.</small>
+      </section>
+      <section className="water-form-card"><h3>{copy("copy_aebccf9c5c72")}</h3><p>{copy("copy_6c5d7be2a766")}</p><div className="water-channel-row"><span><strong>{copy("copy_26608976aae5")}</strong><small>{copy("copy_008e89f8cae7")}</small></span><input type="checkbox" checked readOnly aria-label={copy("copy_5bf4fa859674")} /></div><div className="water-channel-row"><span><strong>{copy("copy_ecd7a93e0777")}</strong><small>{copy("copy_c6be37bce81c")}</small></span><input type="checkbox" disabled aria-label={copy("copy_913029ee5d36")} /></div><GmailConnection portal="water" token={localStorage.getItem("civicalert:water:account")} /></section>
     <div className="water-publish-footer">{draftSaved && <span className="water-draft-saved" role="status">{copy("copy_39542ad3c14d")}</span>}<button type="button" onClick={onCancel}>{copy("copy_19766ed6ccb2")}</button><button type="button" onClick={event => saveDraft(event.currentTarget.form)}>{copy("copy_3de100106dd4")}</button><button className="water-primary" type="submit" disabled={busy}>{busy ? copy("copy_582e0f1abad4") : copy("copy_1a73e4d6678a")}</button></div>
   </form>;
 }

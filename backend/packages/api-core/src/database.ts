@@ -105,8 +105,16 @@ database.exec(`
 `);
 
 database.exec("BEGIN IMMEDIATE");
+
 try {
-  const userColumns = new Set((database.prepare("PRAGMA table_info(users)").all() as Array<{ name: string }>).map(column => column.name));
+  const userColumns = new Set(
+    (
+      database.prepare("PRAGMA table_info(users)").all() as Array<{
+        name: string;
+      }>
+    ).map((column) => column.name)
+  );
+
   for (const [name, definition] of [
     ["phone_number", "TEXT"],
     ["address", "TEXT"],
@@ -121,8 +129,28 @@ try {
     ["immediate_email_alerts", "INTEGER NOT NULL DEFAULT 0"],
     ["terms_accepted_at", "TEXT"],
   ] as const) {
-    if (!userColumns.has(name)) database.exec(`ALTER TABLE users ADD COLUMN ${name} ${definition}`);
+    if (!userColumns.has(name)) {
+      database.exec(
+        `ALTER TABLE users ADD COLUMN ${name} ${definition}`
+      );
+    }
   }
+
+  // Add image storage to existing advisories without deleting existing data.
+  const advisoryColumns = new Set(
+    (
+      database.prepare("PRAGMA table_info(advisories)").all() as Array<{
+        name: string;
+      }>
+    ).map((column) => column.name)
+  );
+
+  if (!advisoryColumns.has("image_data_url")) {
+    database.exec(
+      "ALTER TABLE advisories ADD COLUMN image_data_url TEXT"
+    );
+  }
+
   database.exec("COMMIT");
 } catch (error) {
   database.exec("ROLLBACK");

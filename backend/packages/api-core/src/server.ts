@@ -9,6 +9,7 @@ import {
   decryptRefreshToken,
   encryptRefreshToken,
   exchangeGmailAuthorizationCode,
+  parseGmailImageAttachment,
   safeGmailError,
   sendGmailMessage,
 } from "./gmail.js";
@@ -276,9 +277,27 @@ export function createApi(portal: Portal) {
         const area = required(req.body?.area, "Affected service area");
         const details = required(req.body?.details, "Public update");
         const type = typeof req.body?.type === "string" ? req.body.type : "Service disruption";
+
+        // ADDED: Validate the optional announcement image before saving the advisory.
+        // The frontend will submit it as a data URL (JPEG, PNG, or WebP).
+        const validatedImage = parseGmailImageAttachment(req.body?.imageDataUrl ?? null);
+        const imageDataUrl = validatedImage
+          ? `data:${validatedImage.mimeType};base64,${validatedImage.content.toString("base64")}`
+          : null;
+
         const reference = `${portal === "water" ? "WD" : "CE"}-${Date.now().toString(36).toUpperCase()}`;
-        const id = Number(database.prepare("INSERT INTO advisories (reference, title, utility, type, area, details) VALUES (?, ?, ?, ?, ?, ?)").run(reference, title, utility, type, area, details).lastInsertRowid);
-        const emailDelivery = await deliverAdvisoryEmails(portal, utility, id, reference, title, area, details);
+
+        // ADDED: Save the validated image with the advisory so failed email deliveries can retry with it.
+        const id = Number(database.prepare(`
+          INSERT INTO advisories
+            (reference, title, utility, type, area, details, image_data_url)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(reference, title, utility, type, area, details, imageDataUrl).lastInsertRowid);
+
+        // ADDED: Pass the optional image through to the Gmail delivery function.
+        const emailDelivery = await deliverAdvisoryEmails(
+          portal, utility, id, reference, title, area, details, imageDataUrl,
+        );
         return res.status(201).json({ id, reference, title, utility, type, area, status: "Monitoring", details, emailDelivery });
       } catch (error) { return res.status(400).json({ error: error instanceof Error ? error.message : "Could not publish advisory." }); }
     });
@@ -297,11 +316,32 @@ export function createApi(portal: Portal) {
       return res.json(summarizeEmailDeliveries(rows));
     });
     app.post("/advisories/:id/email-delivery/retry", requireUtility(utility), async (req, res) => {
-      const advisory = database.prepare("SELECT id, reference, title, area, details FROM advisories WHERE id = ? AND utility = ?")
-        .get(Number(req.params.id), utility) as { id: number; reference: string; title: string; area: string; details: string } | undefined;
+      // ADDED: Fetch the saved image too, so retrying a failed email preserves its attachment.
+      const advisory = database.prepare(`
+        SELECT id, reference, title, area, details, image_data_url
+        FROM advisories WHERE id = ? AND utility = ?
+      `).get(Number(req.params.id), utility) as {
+        id: number;
+        reference: string;
+        title: string;
+        area: string;
+        details: string;
+        image_data_url: string | null;
+      } | undefined;
       if (!advisory) return res.status(404).json({ error: "Advisory not found." });
       try {
-        const emailDelivery = await deliverAdvisoryEmails(portal, utility, advisory.id, advisory.reference, advisory.title, advisory.area, advisory.details, true);
+        // ADDED: Pass the originally saved image before the `failedOnly` flag.
+        const emailDelivery = await deliverAdvisoryEmails(
+          portal,
+          utility,
+          advisory.id,
+          advisory.reference,
+          advisory.title,
+          advisory.area,
+          advisory.details,
+          advisory.image_data_url,
+          true,
+        );
         return res.json(emailDelivery);
       } catch (error) {
         return res.status(500).json({ error: error instanceof Error ? error.message : "Could not retry email delivery." });
@@ -448,6 +488,8 @@ async function deliverAdvisoryEmails(
   title: string,
   area: string,
   details: string,
+  // ADDED: Optional image data URL saved with the advisory; null keeps text-only emails working.
+  imageDataUrl: string | null = null,
   failedOnly = false,
 ) {
   const recipients = failedOnly
@@ -512,6 +554,8 @@ async function deliverAdvisoryEmails(
         recipient.email,
         `${utility} advisory: ${title}`,
         `${title}\n\n${area}\n\n${details}\n\nReference: ${reference}`,
+        // ADDED: Gmail creates a multipart email when this optional image data URL is present.
+        imageDataUrl,
       );
       update.run("sent", null, "sent", advisoryId, recipient.id);
     } catch (error) {
